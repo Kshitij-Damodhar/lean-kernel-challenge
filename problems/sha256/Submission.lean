@@ -46,7 +46,7 @@ def fastSchedule (d : Digest) : List Nat :=
   let w := initialWindow d
   w.toList ++ generate 48 w
 
-def fastStep (d : Digest) : Digest :=
+def oldStep (d : Digest) : Digest :=
   let f := rounds (K.zip (fastSchedule d)) iv
   ⟨add32 iv.a f.a, add32 iv.b f.b, add32 iv.c f.c, add32 iv.d f.d,
    add32 iv.e f.e, add32 iv.f f.f, add32 iv.g f.g, add32 iv.h f.h⟩
@@ -83,20 +83,55 @@ theorem schedule_correct (d : Digest) :
   simpa [fastSchedule, initialWindow, Window.toList] using
     (extend_eq 48 [] (initialWindow d)).symm
 
-theorem fastStep_correct (d : Digest) : fastStep d = sha256step d := by
-  unfold fastStep sha256step compress
+theorem oldStep_correct (d : Digest) : oldStep d = sha256step d := by
+  unfold oldStep sha256step compress
   rw [schedule_correct]
 
-theorem fastStep_fun : fastStep = sha256step :=
-  funext fastStep_correct
+/-- Run rounds while generating schedule words on the fly. -/
+def fusedGen : Nat → List Nat → Window → Digest → Digest
+  | 0, _, _, s => s
+  | _ + 1, [], _, s => s
+  | k + 1, kk :: ks, w, s =>
+      let x := w.nextWord
+      fusedGen k ks (w.push x) (round s kk x)
 
-/-- TODO 1: Optimize this implementation. Keep it total and kernel-reducible. -/
+theorem fused_eq : ∀ (k : Nat) (ks : List Nat) (w : Window) (s : Digest),
+    fusedGen k ks w s = rounds (ks.zip (generate k w)) s
+  | 0, ks, w, s => by simp [fusedGen, generate, rounds]
+  | k + 1, [], w, s => by simp [fusedGen, rounds]
+  | k + 1, kk :: ks, w, s => by
+      simp [fusedGen, generate, rounds,
+        fused_eq k ks (w.push w.nextWord) (round s kk w.nextWord)]
+
+theorem rounds_zip_append : ∀ (ws ks rest : List Nat) (s : Digest),
+    rounds (ks.zip (ws ++ rest)) s
+      = rounds ((ks.drop ws.length).zip rest) (rounds (ks.zip ws) s)
+  | [], ks, rest, s => by simp [rounds]
+  | w :: ws, [], rest, s => by simp [rounds]
+  | w :: ws, k :: ks, rest, s => by
+      simp [rounds, rounds_zip_append ws ks rest (round s k w)]
+
+def fastStep (d : Digest) : Digest :=
+  let w := initialWindow d
+  let s := rounds (K.zip w.toList) iv
+  let f := fusedGen 48 (K.drop 16) w s
+  ⟨add32 iv.a f.a, add32 iv.b f.b, add32 iv.c f.c, add32 iv.d f.d,
+   add32 iv.e f.e, add32 iv.f f.f, add32 iv.g f.g, add32 iv.h f.h⟩
+
+theorem fastStep_eq_old (d : Digest) : fastStep d = oldStep d := by
+  have hl : (initialWindow d).toList.length = 16 := rfl
+  have h := rounds_zip_append (initialWindow d).toList K
+    (generate 48 (initialWindow d)) iv
+  rw [hl, ← fused_eq] at h
+  simp only [fastStep, oldStep, fastSchedule, h]
+
+theorem fastStep_fun : fastStep = sha256step :=
+  funext fun d => (fastStep_eq_old d).trans (oldStep_correct d)
+
 def impl (n : Nat) : Nat :=
   encodeDigest
     (iterDigest fastStep (sha256Steps n) (seedDigest (sha256Seed n)))
 
-/-- TODO 2: Prove that `impl n` equals `sha256Spec n` for every natural number n.
-Keep the theorem statement unchanged. -/
 theorem impl_correct : ∀ n, impl n = sha256Spec n := fun n =>
   congrArg
     (fun step => encodeDigest
