@@ -1,5 +1,3 @@
-CLAUDE SOLUTION 2 FOR FIB:
-
 
 import Spec
 
