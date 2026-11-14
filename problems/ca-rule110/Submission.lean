@@ -77,8 +77,47 @@ def biter : Nat → Nat → Nat
   | 0, m => m
   | t + 1, m => biter t (bstep m)
 
+/-! ### Fast initial row: build the row directly as a `Nat`, no `List Bool`. -/
+
+theorem encodeRow_append_single (l : List Bool) (b : Bool) :
+    encodeRow (l ++ [b]) = encodeRow l + (if b then 1 else 0) * 2 ^ l.length := by
+  induction l with
+  | nil => cases b <;> simp [encodeRow]
+  | cons x xs ih =>
+    have h1 : encodeRow (x :: (xs ++ [b])) =
+        2 * encodeRow (xs ++ [b]) + (if x then 1 else 0) := rfl
+    have h2 : encodeRow (x :: xs) = 2 * encodeRow xs + (if x then 1 else 0) := rfl
+    rw [List.cons_append, h1, h2, ih, List.length_cons, Nat.pow_succ]
+    cases b <;> cases x <;> simp <;> omega
+
+/-- Same cell rule as `initRowFor`, as a standalone function. -/
+def bitAt (seed i : Nat) : Bool :=
+  if i = 0 then true
+  else if i = 1 then false
+  else (caMix32 (seed + (i + 1) * 0x9e3779b9)).testBit 31
+
+/-- Cells `0 .. k-1` packed into one number (cell `i` at bit `i`). -/
+def initN (seed : Nat) : Nat → Nat
+  | 0 => 0
+  | k + 1 => initN seed k + ((if bitAt seed k then 1 else 0) <<< k)
+
+theorem initN_eq (seed : Nat) : ∀ k : Nat,
+    initN seed k = encodeRow ((List.range k).map (bitAt seed)) := by
+  intro k
+  induction k with
+  | zero => rfl
+  | succ k ih =>
+    rw [List.range_succ, List.map_append]
+    simp only [List.map_cons, List.map_nil]
+    rw [encodeRow_append_single, List.length_map, List.length_range, ← ih]
+    simp [initN, Nat.shiftLeft_eq]
+
+theorem initN_256 (seed : Nat) : initN seed 256 = encodeRow (initRowFor seed) := by
+  rw [initN_eq]
+  rfl
+
 def impl : Nat → Nat := fun n =>
-  biter (caSteps n) (encodeRow (initRowFor (caSeed n)))
+  biter (caSteps n) (initN (caSeed n) 256)
 
 theorem step_eq {row : List Bool} (hlen : row.length = 256) :
     encodeRow (stepRow row) = bstep (encodeRow row) := by
@@ -112,8 +151,9 @@ theorem iter_eq : ∀ (n : Nat) (row : List Bool), row.length = 256 →
 
 theorem impl_correct : ∀ n, impl n = caSpecN n := by
   intro n
-  show biter (caSteps n) (encodeRow (initRowFor (caSeed n))) =
+  show biter (caSteps n) (initN (caSeed n) 256) =
     encodeRow (iterRow (caSteps n) (initRowFor (caSeed n)))
+  rw [initN_256]
   exact (iter_eq (caSteps n) (initRowFor (caSeed n))
     (by simp [initRowFor, ruleWidth])).symm
 
